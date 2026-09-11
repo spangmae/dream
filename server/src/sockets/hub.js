@@ -27,29 +27,48 @@ export function getSession(socketId) {
 }
 
 function pushReply(session, event, payload) {
-  const entry = { event, payload, at: new Date().toISOString() };
+  const stored =
+    event === "file_content" && payload && typeof payload.content === "string"
+      ? {
+          filename: payload.filename,
+          content: payload.content.slice(0, 4000),
+          truncated: payload.content.length > 4000,
+          bytes: payload.content.length,
+        }
+      : payload;
+  const entry = { event, payload: stored, at: new Date().toISOString() };
   session.lastEvent = event;
   session.replies = [...session.replies.slice(-99), entry];
-  return entry;
+  return { event, payload, at: entry.at };
 }
 
 function logSocket(kind, socketId, extra = "") {
   console.log(`SOCKET ${kind} ${socketId}${extra ? ` ${extra}` : ""}`);
 }
 
-export function emitToClient(io, socketId, event, data) {
+export function emitToClient(io, socketId, event, data, ident = {}) {
   if (!CLIENT_EVENTS.includes(event)) {
     const err = new Error(`Unknown event: ${event}`);
     err.status = 400;
     throw err;
   }
   const nsp = io.of("/client");
-  const socket = nsp.sockets.get(socketId);
+  let socket = nsp.sockets.get(socketId);
+  let session = sessions.get(socketId);
+
+  if (!socket && ident.username) {
+    session = [...sessions.values()].find(
+      (row) =>
+        row.username === ident.username &&
+        String(row.client_id ?? "") === String(ident.client_id ?? row.client_id ?? "")
+    );
+    if (session) socket = nsp.sockets.get(session.socketId);
+  }
+
   if (!socket) return false;
   socket.emit(event, data);
-  const session = sessions.get(socketId);
   if (session) session.lastEvent = `send:${event}`;
-  logSocket(`/client send ${event}`, socketId);
+  logSocket(`/client send ${event}`, socket.id);
   return true;
 }
 
@@ -104,8 +123,14 @@ export function attachSockets(io) {
 
     for (const event of CLIENT_REPLIES) {
       socket.on(event, (payload) => {
+        const extra =
+          event === "file_content"
+            ? `filename=${payload?.filename || "-"} bytes=${String(payload?.content || "").length}`
+            : event === "file_error"
+              ? `filename=${payload?.filename || "-"} ${payload?.message || ""}`
+              : "";
         const entry = pushReply(session, event, payload);
-        logSocket(`/client ${event}`, socket.id);
+        logSocket(`/client ${event}`, socket.id, extra);
         notifyAdmins("client_reply", {
           socketId: socket.id,
           username: session.username,

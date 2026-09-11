@@ -5,6 +5,17 @@ export function asText(value) {
   return String(value);
 }
 
+export function parseUploadFlag(body = {}) {
+  const raw = body.isUpload ?? body.isupload ?? body.IsUpload;
+  const text = asText(raw).trim().toLowerCase();
+  return {
+    raw,
+    text,
+    explicitFalse: text === "false" || text === "0" || text === "no",
+    explicitTrue: text === "true" || text === "1" || text === "yes",
+  };
+}
+
 export function isUploadEnabled(value) {
   return asText(value).trim().toLowerCase() === "true";
 }

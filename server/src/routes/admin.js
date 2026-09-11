@@ -71,7 +71,10 @@ adminRouter.post("/sockets/:socketId/command", (req, res) => {
   try {
     const event = asText(req.body?.event).trim();
     const data = req.body?.data;
-    const ok = emitToClient(req.app.get("io"), req.params.socketId, event, data);
+    const ok = emitToClient(req.app.get("io"), req.params.socketId, event, data, {
+      username: asText(req.body?.username).trim(),
+      client_id: req.body?.client_id,
+    });
     if (!ok) return res.status(404).json({ error: "Client is not connected" });
     return res.json({ ok: true, socket: getSession(req.params.socketId) });
   } catch (err) {

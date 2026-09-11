@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { API_URL, api, getToken } from "@/lib/api";
+import { API_URL, api, downloadHref, getToken, type FileRow } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 type Reply = { event: string; payload: unknown; at: string };
@@ -59,8 +59,32 @@ function asText(value: unknown) {
   }
 }
 
-function saveToLaptop(filename: string, content: string) {
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+function identityKey(row: { username?: string; client_id?: string | number } | null) {
+  if (!row) return "";
+  return `${row.username || ""}::${row.client_id ?? ""}`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function saveToLaptop(filename: string, content: string) {
+  const blob = new Blob([content], { type: "application/octet-stream" });
+  const picker = (window as Window & { showSaveFilePicker?: (opts: unknown) => Promise<FileSystemFileHandle> })
+    .showSaveFilePicker;
+  if (typeof picker === "function") {
+    try {
+      const handle = await picker({
+        suggestedName: filename || "file.txt",
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return `Saved on this PC: you chose the folder in the save dialog (${handle.name})`;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return "Save cancelled";
+    }
+  }
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -69,6 +93,7 @@ function saveToLaptop(filename: string, content: string) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+  return `Saved as ${filename} in your browser Downloads folder (usually C:\\Users\\<your-windows-user>\\Downloads\\${filename})`;
 }
 
 function FileRow({
@@ -140,11 +165,15 @@ export default function LivePage() {
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const selectedIdRef = useRef("");
+  const selectedIdentRef = useRef("");
+  const skipBrowseRef = useRef(false);
   const historyRef = useRef<string[]>([]);
   const fileWaiters = useRef<Array<(payload: FileContent & { error?: boolean }) => void>>([]);
+  const vpsWaiters = useRef<Array<{ fileName: string; resolve: (row: FileRow) => void }>>([]);
 
   const selected = sockets.find((row) => row.socketId === selectedId) || null;
   selectedIdRef.current = selectedId;
+  if (selected) selectedIdentRef.current = identityKey(selected);
 
   const items = useMemo(() => {
     const rows = [...(listing?.contents || [])];
@@ -155,15 +184,28 @@ export default function LivePage() {
   }, [listing]);
 
   async function send(event: string, data: unknown) {
-    if (!selectedIdRef.current) {
-      setError("Select an online client first");
-      return;
+    const ident = selectedIdentRef.current.split("::");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!selectedIdRef.current) {
+        await sleep(600);
+        continue;
+      }
+      try {
+        await api(`/admin/sockets/${encodeURIComponent(selectedIdRef.current)}/command`, {
+          method: "POST",
+          body: JSON.stringify({
+            event,
+            data,
+            username: ident[0] || selected?.username,
+            client_id: ident[1] || selected?.client_id,
+          }),
+        });
+        return true;
+      } catch {
+        await sleep(800);
+      }
     }
-    setError("");
-    await api(`/admin/sockets/${encodeURIComponent(selectedIdRef.current)}/command`, {
-      method: "POST",
-      body: JSON.stringify({ event, data }),
-    });
+    return false;
   }
 
   function goTo(path: string, pushHistory = true) {
@@ -195,9 +237,31 @@ export default function LivePage() {
       auth: { token: getToken() },
       transports: ["websocket", "polling"],
     });
-    socket.on("sockets", (list: LiveSocket[]) => setSockets(list));
-    socket.on("socket_update", (payload: { sockets: LiveSocket[] }) => setSockets(payload.sockets));
-    socket.on("client_reply", (entry: Reply & { socketId: string }) => {
+    socket.on("sockets", (list: LiveSocket[]) => {
+      setSockets(list);
+      const currentId = selectedIdRef.current;
+      const ident = selectedIdentRef.current;
+      if (currentId && !list.some((row) => row.socketId === currentId) && ident) {
+        const next = list.find((row) => identityKey(row) === ident);
+        if (next) {
+          skipBrowseRef.current = true;
+          setSelectedId(next.socketId);
+        }
+      }
+    });
+    socket.on("socket_update", (payload: { sockets: LiveSocket[] }) => {
+      setSockets(payload.sockets);
+      const currentId = selectedIdRef.current;
+      const ident = selectedIdentRef.current;
+      if (currentId && !payload.sockets.some((row) => row.socketId === currentId) && ident) {
+        const next = payload.sockets.find((row) => identityKey(row) === ident);
+        if (next) {
+          skipBrowseRef.current = true;
+          setSelectedId(next.socketId);
+        }
+      }
+    });
+    socket.on("client_reply", (entry: Reply & { socketId: string; username?: string; client_id?: string | number }) => {
       setSockets((prev) =>
         prev.map((row) =>
           row.socketId === entry.socketId
@@ -205,7 +269,10 @@ export default function LivePage() {
             : row
         )
       );
-      if (selectedIdRef.current !== entry.socketId) return;
+      const sameClient =
+        entry.socketId === selectedIdRef.current ||
+        (selectedIdentRef.current && identityKey(entry) === selectedIdentRef.current);
+      if (!sameClient) return;
       if (entry.event === "dir_result") {
         const payload = entry.payload as DirResult;
         if (payload && Array.isArray(payload.contents)) {
@@ -222,7 +289,9 @@ export default function LivePage() {
           const filename = payload.filename || "file";
           const content = String(payload.content || "");
           if (isTextName(filename)) setPreview({ filename, content });
-          else saveToLaptop(filename, content);
+          else {
+            saveToLaptop(filename, content).then(setStatus);
+          }
         }
       }
       if (entry.event === "file_error") {
@@ -234,6 +303,13 @@ export default function LivePage() {
         setStatus(asText(entry.payload));
       }
     });
+    socket.on("file_saved", (row: FileRow) => {
+      const index = vpsWaiters.current.findIndex((item) => item.fileName === row.file_name);
+      if (index >= 0) {
+        const waiter = vpsWaiters.current.splice(index, 1)[0];
+        waiter.resolve(row);
+      }
+    });
     socket.on("connect_error", (err) => setError(err.message));
     return () => {
       socket.disconnect();
@@ -242,6 +318,10 @@ export default function LivePage() {
 
   useEffect(() => {
     if (!selectedId) return;
+    if (skipBrowseRef.current) {
+      skipBrowseRef.current = false;
+      return;
+    }
     historyRef.current = [];
     setListing(null);
     setPicked(new Set());
@@ -251,19 +331,54 @@ export default function LivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
-  function waitForFile() {
-    return new Promise<FileContent & { error?: boolean }>((resolve, reject) => {
-      let wrapped: (payload: FileContent & { error?: boolean }) => void;
-      const timer = window.setTimeout(() => {
-        fileWaiters.current = fileWaiters.current.filter((item) => item !== wrapped);
-        reject(new Error("Timed out waiting for file content"));
-      }, 45000);
-      wrapped = (payload) => {
+  function waitForVpsSave(fileName: string, timeoutMs = 90000) {
+    const username = (selectedIdentRef.current.split("::")[0] || selected?.username || "").trim();
+    return new Promise<FileRow>((resolve, reject) => {
+      let settled = false;
+      const finish = (row: FileRow) => {
+        if (settled) return;
+        settled = true;
         window.clearTimeout(timer);
-        resolve(payload);
+        vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
+        resolve(row);
       };
-      fileWaiters.current.push(wrapped);
+      const timer = window.setTimeout(() => {
+        vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Timed out waiting for VPS save: ${fileName}`));
+        }
+      }, timeoutMs);
+      vpsWaiters.current.push({ fileName, resolve: finish });
+
+      (async () => {
+        const started = Date.now();
+        while (!settled && Date.now() - started < timeoutMs) {
+          await sleep(2000);
+          if (settled) return;
+          try {
+            const query = username
+              ? `/admin/files?username=${encodeURIComponent(username)}&q=${encodeURIComponent(fileName)}`
+              : `/admin/files?q=${encodeURIComponent(fileName)}`;
+            const data = await api<{ files: FileRow[] }>(query);
+            const hit = (data.files || []).find((row) => row.file_name === fileName);
+            if (hit) finish(hit);
+          } catch {
+            // keep waiting; one poll error must not stop the batch
+          }
+        }
+      })();
     });
+  }
+
+  function downloadFromVps(id: string, filename: string) {
+    const link = document.createElement("a");
+    link.href = downloadHref("files", id);
+    link.download = filename;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
   function togglePick(entry: DirEntry) {
@@ -289,43 +404,60 @@ export default function LivePage() {
     setPicked(new Set(items.map(entryKey)));
   }
 
-  async function downloadSelected() {
+  async function transferSelected(alsoLaptop: boolean) {
     if (!listing) {
       setError("Open a folder first");
       return;
     }
     const chosen = items.filter((item) => picked.has(entryKey(item)));
+    const targets = chosen.length
+      ? chosen
+      : [{ name: listing.currentPath || ".", isDirectory: true, isFile: false, wholeFolder: true }];
+    const ok: string[] = [];
+    const fail: string[] = [];
     setBusy(true);
     setError("");
-    try {
-      if (!chosen.length) {
-        setStatus("Uploading current folder to VPS…");
-        await send("upload", listing.currentPath);
-        return;
-      }
-      for (const item of chosen) {
+    setStatus(alsoLaptop ? "VPS first, then copy to this PC…" : "Saving to VPS…");
+
+    for (let i = 0; i < targets.length; i += 1) {
+      const item = targets[i] as DirEntry & { wholeFolder?: boolean };
+      try {
         if (item.isDirectory) {
-          const folder = joinClientPath(listing.currentPath, item.name);
-          setStatus(`Upload folder to VPS: ${folder}`);
-          await send("upload", folder);
-          await send("exec", `ss_upd ${item.name}`);
-        } else {
-          setStatus(`Download ${item.name}`);
-          const pending = waitForFile();
-          await send("read_file", { filename: item.name, path: listing.currentPath });
-          const result = await pending;
-          if (!result.error && typeof result.content === "string") {
-            saveToLaptop(result.filename || item.name, result.content);
-          }
-          await send("exec", `ss_upf ${item.name}`);
+          const folder = item.wholeFolder ? listing.currentPath : joinClientPath(listing.currentPath, item.name);
+          setStatus(`(${i + 1}/${targets.length}) Upload folder to VPS: ${folder}`);
+          const sent = await send("upload", folder);
+          if (!sent) throw new Error("socket send failed (client reconnecting)");
+          ok.push(`${item.name || folder}: VPS folder upload started`);
+          await sleep(500);
+          continue;
         }
+
+        setStatus(`(${i + 1}/${targets.length}) Save ${item.name} to VPS`);
+        const sent = await send("exec", `ss_upf ${item.name}`);
+        if (!sent) throw new Error("socket send failed (client reconnecting)");
+        const saved = await waitForVpsSave(item.name);
+        ok.push(`${item.name}: saved on VPS`);
+        if (alsoLaptop) {
+          downloadFromVps(saved.id, item.name);
+          ok.push(`${item.name}: browser download started (Downloads folder)`);
+        }
+      } catch (err) {
+        fail.push(`${item.name}: ${err instanceof Error ? err.message : "failed"}`);
       }
-      setStatus("Download finished");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Download failed");
-    } finally {
-      setBusy(false);
+      await sleep(400);
     }
+
+    const summary = [
+      `Done. ${ok.length} ok, ${fail.length} failed.`,
+      ...ok,
+      ...fail.map((line) => `FAIL ${line}`),
+      alsoLaptop
+        ? "Laptop copies go to your browser Downloads folder (usually C:\\Users\\<you>\\Downloads\\)."
+        : "VPS copies are in Explorer / server uploads.",
+    ].join("\n");
+    setStatus(summary);
+    setError(fail.length ? `${fail.length} file(s) failed. Other files continued.` : "");
+    setBusy(false);
   }
 
   function onAddress(event: FormEvent) {
@@ -417,8 +549,11 @@ export default function LivePage() {
                 <button className="btn" type="button" onClick={() => setPicked(new Set())} disabled={!picked.size}>
                   Clear
                 </button>
-                <button className="btn btn-primary" type="button" onClick={downloadSelected} disabled={busy} style={{ width: "auto" }}>
-                  {busy ? "Working…" : "Download"}
+                <button className="btn btn-primary" type="button" onClick={() => transferSelected(false)} disabled={busy} style={{ width: "auto" }}>
+                  {busy ? "Working…" : "Save to VPS"}
+                </button>
+                <button className="btn" type="button" onClick={() => transferSelected(true)} disabled={busy}>
+                  Save to VPS + this PC
                 </button>
                 <span className="mono">
                   {picked.size} selected
@@ -426,8 +561,10 @@ export default function LivePage() {
                 </span>
               </div>
               <p className="fe-hint">
-                Hold 500ms to select. Double-click folder = cd. Double-click text file = preview. Download saves text to
-                this PC and asks the client to upload a copy to the VPS (`upload` / `ss_upf` / `ss_upd`).
+                VPS is primary. Files go to the server with `ss_upf` / `upload` (same as the client HTTP upload).
+                "Save to VPS + this PC" then downloads from the VPS to your browser Downloads folder
+                (`C:\Users\&lt;you&gt;\Downloads\`). Many files run one by one; a failure skips that file and continues.
+                This does not use `read_file`, so the socket should stay up.
               </p>
               <div className="table-wrap">
                 <table>
@@ -530,7 +667,9 @@ export default function LivePage() {
               <button
                 className="btn"
                 type="button"
-                onClick={() => saveToLaptop(preview.filename, preview.content)}
+                onClick={() => {
+                  saveToLaptop(preview.filename, preview.content).then(setStatus);
+                }}
               >
                 Download to this PC
               </button>

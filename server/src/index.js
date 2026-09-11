@@ -63,6 +63,9 @@ server.requestTimeout = 0;
 
 const io = new SocketIOServer(server, {
   cors: { origin: corsOrigin, credentials: true },
+  maxHttpBufferSize: 1e8,
+  pingTimeout: 120000,
+  pingInterval: 25000,
 });
 app.set("io", io);
 attachSockets(io);
