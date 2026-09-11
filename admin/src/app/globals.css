@@ -449,6 +449,93 @@ td.path, .mono {
 
 .check { width: 16px; height: 16px; }
 
+.cmd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+}
+
+.cmd-box {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.cmd-box h3 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cmd-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+}
+
+.dir-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.dir-item:hover { background: rgba(255,255,255,0.03); }
+
+.fe-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.fe-address {
+  flex: 1;
+  min-width: 180px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.fe-row {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.fe-row.picked td {
+  background: var(--accent-dim);
+}
+
+.fe-hint {
+  color: var(--faint);
+  font-size: 12px;
+  padding: 0 12px 10px;
+}
+
+@media (max-width: 1100px) {
+  .cmd-grid { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 1100px) {
   .stats { grid-template-columns: 1fr 1fr; }
   .explorer { grid-template-columns: 1fr; min-height: auto; }

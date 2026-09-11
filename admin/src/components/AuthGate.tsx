@@ -10,6 +10,7 @@ const links = [
   { href: "/clients", label: "Clients" },
   { href: "/explorer", label: "Explorer" },
   { href: "/contents", label: "Contents" },
+  { href: "/live", label: "Live" },
 ];
 
 export function AuthGate({ children }: { children: React.ReactNode }) {

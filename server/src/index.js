@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { Server as SocketIOServer } from "socket.io";
 import { config } from "./config.js";
+import { attachSockets } from "./sockets/hub.js";
 import { publicRouter } from "./routes/public.js";
 import { adminRouter } from "./routes/admin.js";
 
@@ -39,6 +40,7 @@ app.get("/", (_req, res) => {
   res.json({
     name: "Dream API",
     health: "/health",
+    socket: "/client",
     public: ["/register", "/file-upload", "/content-upload"],
   });
 });
@@ -63,13 +65,7 @@ const io = new SocketIOServer(server, {
   cors: { origin: corsOrigin, credentials: true },
 });
 app.set("io", io);
-
-io.on("connection", (socket) => {
-  console.log("socket connected", socket.id);
-  socket.on("disconnect", () => {
-    console.log("socket disconnected", socket.id);
-  });
-});
+attachSockets(io);
 
 server.listen(config.port, config.host, () => {
   console.log(`Dream API listening on ${config.host}:${config.port}`);

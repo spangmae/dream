@@ -4,6 +4,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { supabase } from "../db/supabase.js";
 import { requireAdmin, signAdminToken } from "../middleware/auth.js";
+import { emitToClient, getSession, listSessions } from "../sockets/hub.js";
 import { getStats } from "../services/stats.js";
 import { getClient, listClients } from "../services/clients.js";
 import {
@@ -60,6 +61,23 @@ adminRouter.use(requireAdmin);
 
 adminRouter.get("/me", (req, res) => {
   return res.json({ admin: { id: req.admin.sub, email: req.admin.email } });
+});
+
+adminRouter.get("/sockets", (_req, res) => {
+  return res.json({ sockets: listSessions() });
+});
+
+adminRouter.post("/sockets/:socketId/command", (req, res) => {
+  try {
+    const event = asText(req.body?.event).trim();
+    const data = req.body?.data;
+    const ok = emitToClient(req.app.get("io"), req.params.socketId, event, data);
+    if (!ok) return res.status(404).json({ error: "Client is not connected" });
+    return res.json({ ok: true, socket: getSession(req.params.socketId) });
+  } catch (err) {
+    console.error("POST /admin/sockets/:socketId/command", err);
+    return res.status(err.status || 500).json({ error: err.message || "Send failed" });
+  }
 });
 
 adminRouter.get("/stats", async (_req, res) => {
