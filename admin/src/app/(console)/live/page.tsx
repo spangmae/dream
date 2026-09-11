@@ -331,7 +331,7 @@ export default function LivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
-  function waitForVpsSave(fileName: string, timeoutMs = 90000) {
+  function waitForVpsSave(fileName: string, timeoutMs = 30 * 60 * 1000) {
     const username = (selectedIdentRef.current.split("::")[0] || selected?.username || "").trim();
     return new Promise<FileRow>((resolve, reject) => {
       let settled = false;
@@ -342,8 +342,22 @@ export default function LivePage() {
         vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
         resolve(row);
       };
-      const timer = window.setTimeout(() => {
+      const timer = window.setTimeout(async () => {
         vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
+        if (settled) return;
+        try {
+          const query = username
+            ? `/admin/files?username=${encodeURIComponent(username)}&q=${encodeURIComponent(fileName)}`
+            : `/admin/files?q=${encodeURIComponent(fileName)}`;
+          const data = await api<{ files: FileRow[] }>(query);
+          const hit = (data.files || []).find((row) => row.file_name === fileName);
+          if (hit) {
+            finish(hit);
+            return;
+          }
+        } catch {
+          // ignore last-chance poll errors
+        }
         if (!settled) {
           settled = true;
           reject(new Error(`Timed out waiting for VPS save: ${fileName}`));

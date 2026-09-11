@@ -92,3 +92,7 @@ export async function api<T = unknown>(
 export function downloadHref(kind: "files" | "contents", id: string) {
   return `${API_URL}/admin/${kind}/${id}/download?access_token=${encodeURIComponent(getToken())}`;
 }
+
+export function diskDownloadHref(relPath: string) {
+  return `${API_URL}/admin/disk/download?path=${encodeURIComponent(relPath)}&access_token=${encodeURIComponent(getToken())}`;
+}

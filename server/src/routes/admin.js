@@ -23,6 +23,7 @@ import {
 } from "../services/contents.js";
 import { buildFolderTree } from "../utils/tree.js";
 import { isInsideUploadDir } from "../services/storage.js";
+import { deleteUploadPath, listUploadDir, resolveUploadRel } from "../services/disk.js";
 import { asText } from "../utils/paths.js";
 
 export const adminRouter = Router();
@@ -237,5 +238,39 @@ adminRouter.delete("/contents/:id", async (req, res) => {
   } catch (err) {
     console.error("DELETE /admin/contents/:id", err);
     return res.status(500).json({ error: "Delete failed" });
+  }
+});
+
+adminRouter.get("/disk", async (req, res) => {
+  try {
+    const listing = await listUploadDir(asText(req.query.path));
+    return res.json(listing);
+  } catch (err) {
+    console.error("GET /admin/disk", err);
+    return res.status(err.status || 500).json({ error: err.message || "Failed to list disk" });
+  }
+});
+
+adminRouter.get("/disk/download", async (req, res) => {
+  try {
+    const { abs } = resolveUploadRel(asText(req.query.path));
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      return res.status(404).json({ error: "File not found" });
+    }
+    return res.download(abs, path.basename(abs));
+  } catch (err) {
+    console.error("GET /admin/disk/download", err);
+    return res.status(err.status || 500).json({ error: err.message || "Download failed" });
+  }
+});
+
+adminRouter.delete("/disk", async (req, res) => {
+  try {
+    const rel = asText(req.body?.path || req.query.path);
+    const result = await deleteUploadPath(rel);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("DELETE /admin/disk", err);
+    return res.status(err.status || 500).json({ error: err.message || "Delete failed" });
   }
 });

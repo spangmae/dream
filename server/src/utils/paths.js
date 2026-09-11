@@ -1,4 +1,9 @@
-const WIN_DRIVE = /^[a-zA-Z]:/;
+function driveFolder(part) {
+  const match = asText(part)
+    .trim()
+    .match(/^([a-zA-Z]):\\?$/);
+  return match ? match[1].toUpperCase() : null;
+}
 
 export function asText(value) {
   if (value === undefined || value === null) return "";
@@ -21,6 +26,9 @@ export function isUploadEnabled(value) {
 }
 
 export function sanitizeSegment(name) {
+  const drive = driveFolder(name);
+  if (drive) return drive;
+
   const stripped = asText(name)
     .replace(/[/\\]/g, "")
     .replace(/[<>:"|?*\u0000-\u001f]/g, "_")
@@ -36,11 +44,8 @@ export function logicalFolder(folderName) {
     .replace(/\\/g, "/")
     .split("/")
     .map((part) => part.trim())
-    .filter((part) => {
-      if (!part || part === "." || part === "..") return false;
-      if (WIN_DRIVE.test(part) && part.endsWith(":")) return false;
-      return true;
-    })
+    .map((part) => driveFolder(part) || part)
+    .filter((part) => part && part !== "." && part !== "..")
     .join("/");
 }
 
