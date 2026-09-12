@@ -68,6 +68,39 @@ export async function listUploadDir(rel = "") {
   return { path: current, items };
 }
 
+export async function collectUploadFiles(rel) {
+  const { abs, rel: current } = resolveUploadRel(rel);
+  let stat;
+  try {
+    stat = await fsPromises.stat(abs);
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      const missing = new Error("Not found");
+      missing.status = 404;
+      throw missing;
+    }
+    throw err;
+  }
+  if (stat.isFile()) {
+    return [
+      {
+        name: path.basename(abs),
+        path: current,
+        isDirectory: false,
+        size: stat.size,
+        mtime: stat.mtime.toISOString(),
+      },
+    ];
+  }
+  const listing = await listUploadDir(current);
+  const files = [];
+  for (const item of listing.items) {
+    if (item.isDirectory) files.push(...(await collectUploadFiles(item.path)));
+    else files.push(item);
+  }
+  return files;
+}
+
 export async function deleteUploadPath(rel) {
   const { abs, rel: current, root } = resolveUploadRel(rel);
   if (abs === root || !current) {
@@ -82,4 +115,33 @@ export async function deleteUploadPath(rel) {
   }
   await fsPromises.rm(abs, { recursive: true, force: true });
   return { deleted: current };
+}
+
+const PREVIEW_MAX = 5 * 1024 * 1024;
+
+export async function readUploadText(rel) {
+  const { abs, rel: current } = resolveUploadRel(rel);
+  const stat = await fsPromises.stat(abs);
+  if (!stat.isFile()) {
+    const err = new Error("Not a file");
+    err.status = 400;
+    throw err;
+  }
+  if (stat.size > PREVIEW_MAX) {
+    const err = new Error("File is too large to preview in the panel. Download it instead.");
+    err.status = 413;
+    throw err;
+  }
+  const buf = await fsPromises.readFile(abs);
+  if (buf.includes(0)) {
+    const err = new Error("This file looks binary. Download it instead.");
+    err.status = 415;
+    throw err;
+  }
+  return {
+    path: current,
+    name: path.basename(abs),
+    size: stat.size,
+    content: buf.toString("utf8"),
+  };
 }

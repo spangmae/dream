@@ -56,10 +56,8 @@ publicRouter.post("/file-upload", (req, res, next) => {
       return res.json({ state: "success" });
     }
 
-    await upsertClient(username, req.body?.client_id);
     const saved = await saveUploadedFile({
       username,
-      clientId: req.body?.client_id,
       folderName,
       fileName,
       filePath: req.body?.filePath,
@@ -70,10 +68,10 @@ publicRouter.post("/file-upload", (req, res, next) => {
     );
     try {
       req.app.get("io")?.of("/admin").emit("file_saved", {
-        id: saved.id,
         username: saved.username,
         file_name: saved.file_name,
         folder_key: saved.folder_key,
+        path: saved.rel_path,
         size_bytes: saved.size_bytes,
       });
     } catch (notifyErr) {
