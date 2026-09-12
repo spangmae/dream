@@ -21,6 +21,10 @@ export function listSessions() {
   return [...sessions.values()].map(publicSession);
 }
 
+export function liveUsernames() {
+  return [...new Set([...sessions.values()].map((row) => row.username).filter(Boolean))];
+}
+
 export function getSession(socketId) {
   const session = sessions.get(socketId);
   return session ? publicSession(session) : null;

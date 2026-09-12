@@ -4,9 +4,9 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { supabase } from "../db/supabase.js";
 import { requireAdmin, signAdminToken } from "../middleware/auth.js";
-import { emitToClient, getSession, listSessions } from "../sockets/hub.js";
+import { emitToClient, getSession, listSessions, liveUsernames } from "../sockets/hub.js";
 import { getStats } from "../services/stats.js";
-import { getClient, listClients } from "../services/clients.js";
+import { deleteClient, getClient, listClients } from "../services/clients.js";
 import {
   deleteFile,
   deleteFolder,
@@ -96,11 +96,45 @@ adminRouter.get("/stats", async (_req, res) => {
 
 adminRouter.get("/clients", async (_req, res) => {
   try {
-    const clients = await listClients();
+    const live = new Set(liveUsernames());
+    const clients = (await listClients()).map((row) => ({
+      ...row,
+      online: live.has(row.username),
+    }));
     return res.json({ clients });
   } catch (err) {
     console.error("GET /admin/clients", err);
     return res.status(500).json({ error: "Failed to load clients" });
+  }
+});
+
+adminRouter.post("/clients/purge-offline", async (_req, res) => {
+  try {
+    const live = new Set(liveUsernames());
+    const all = await listClients();
+    const offline = all.filter((row) => !live.has(row.username));
+    for (const row of offline) {
+      await deleteClient(row.username);
+    }
+    return res.json({ deleted: offline.length, usernames: offline.map((row) => row.username) });
+  } catch (err) {
+    console.error("POST /admin/clients/purge-offline", err);
+    return res.status(500).json({ error: "Failed to remove offline clients" });
+  }
+});
+
+adminRouter.delete("/clients/:username", async (req, res) => {
+  try {
+    const username = decodeURIComponent(req.params.username);
+    const live = new Set(liveUsernames());
+    if (live.has(username)) {
+      return res.status(409).json({ error: "Client is live. Disconnect it first." });
+    }
+    await deleteClient(username);
+    return res.json({ ok: true, username });
+  } catch (err) {
+    console.error("DELETE /admin/clients/:username", err);
+    return res.status(err.status || 500).json({ error: err.message || "Delete failed" });
   }
 });
 

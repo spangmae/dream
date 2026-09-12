@@ -54,3 +54,19 @@ export async function getClient(username) {
   if (error) throw error;
   return data;
 }
+
+export async function deleteClient(username) {
+  const name = asText(username).trim();
+  if (!name) {
+    const err = new Error("username is required");
+    err.status = 400;
+    throw err;
+  }
+  const contents = await supabase.from("contents").delete().eq("username", name);
+  if (contents.error) throw contents.error;
+  const files = await supabase.from("files").delete().eq("username", name);
+  if (files.error) throw files.error;
+  const clients = await supabase.from("clients").delete().eq("username", name);
+  if (clients.error) throw clients.error;
+  return { username: name };
+}

@@ -14,6 +14,7 @@ export type ClientRow = {
   file_count: number;
   content_count: number;
   bytes: number;
+  online?: boolean;
 };
 
 export type FileRow = {
