@@ -18,28 +18,45 @@ type LiveSocket = {
 
 type DirEntry = { name: string; isDirectory: boolean; isFile: boolean };
 type DirResult = { currentPath: string; contents: DirEntry[] };
+type FileContent = { filename?: string; content?: string; message?: string };
 type DiskSaved = { file_name: string; path?: string; id?: string; size_bytes?: number };
 
 const TEXT_EXT =
   /\.(txt|log|md|json|csv|xml|html|htm|css|js|ts|tsx|jsx|yml|yaml|ini|conf|cfg|env|py|java|c|h|sql|bat|ps1|sh|php|rb|go|rs|toml|svg)$/i;
 
+function normalizeClientPath(path: string) {
+  const value = String(path || "").trim();
+  if (/^[a-zA-Z]:$/.test(value)) return `${value}\\`;
+  return value;
+}
+
 function joinClientPath(base: string, name: string) {
-  const root = String(base || "").replace(/[\\/]+$/, "");
-  const sep = root.includes("\\") || /^[a-zA-Z]:/.test(root) ? "\\" : "/";
+  const raw = normalizeClientPath(base);
+  const isWin = raw.includes("\\") || /^[a-zA-Z]:/.test(raw);
+  const sep = isWin ? "\\" : "/";
+  const root = raw.replace(/[\\/]+$/, "");
   if (!root) return name;
-  if (!name) return root;
+  if (!name) return normalizeClientPath(raw);
+  if (/^[a-zA-Z]:$/.test(root)) return `${root}${sep}${name}`;
   return `${root}${sep}${name}`;
 }
 
 function parentPath(path: string) {
-  const value = String(path || "").replace(/[\\/]+$/, "");
-  if (!value) return "";
-  if (/^[a-zA-Z]:$/.test(value)) return value;
-  const sep = value.includes("\\") ? "\\" : "/";
-  const parts = value.split(/[\\/]/).filter(Boolean);
-  if (parts.length <= 1) return /^[a-zA-Z]:/.test(value) ? `${parts[0]}\\` : "/";
+  const raw = normalizeClientPath(path);
+  if (!raw) return "";
+  const isWin = raw.includes("\\") || /^[a-zA-Z]:/.test(raw);
+  const sep = isWin ? "\\" : "/";
+  const stripped = raw.replace(/[\\/]+$/, "");
+  if (/^[a-zA-Z]:$/.test(stripped)) return `${stripped}\\`;
+  const parts = stripped.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) {
+    if (/^[a-zA-Z]:$/.test(parts[0] || "")) return `${parts[0]}\\`;
+    return isWin ? `${stripped}${sep}` : "/";
+  }
   const next = parts.slice(0, -1).join(sep);
-  return /^[a-zA-Z]:/.test(value) && !next.endsWith(":") ? next : next;
+  if (/^[a-zA-Z]:$/.test(next)) return `${next}\\`;
+  if (!isWin && raw.startsWith("/")) return `/${next}`;
+  return next;
 }
 
 function entryKey(entry: DirEntry) {
@@ -224,8 +241,9 @@ export default function LivePage() {
     const current = listing?.currentPath || "";
     if (pushHistory && current) historyRef.current.push(current);
     setPicked(new Set());
-    setAddress(path);
-    send("dir", path.trim().toLowerCase().startsWith("cd ") ? path.trim() : `cd ${path}`);
+    const target = normalizeClientPath(path);
+    setAddress(target);
+    send("dir", target.trim().toLowerCase().startsWith("cd ") ? target.trim() : `cd ${target}`);
   }
 
   function resolveFileWaiter(payload: FileContent, errorFlag = false) {
@@ -288,10 +306,10 @@ export default function LivePage() {
       if (entry.event === "dir_result") {
         const payload = entry.payload as DirResult;
         if (payload && Array.isArray(payload.contents)) {
-          setListing(payload);
-          setAddress(payload.currentPath || "");
+          setListing({ ...payload, currentPath: normalizeClientPath(payload.currentPath || "") });
+          setAddress(normalizeClientPath(payload.currentPath || ""));
           setPicked(new Set());
-          setStatus(payload.currentPath || "");
+          setStatus(normalizeClientPath(payload.currentPath || ""));
         }
       }
       if (entry.event === "file_content") {

@@ -1,14 +1,60 @@
+import fs from "fs";
 import path from "path";
 import { supabase } from "../db/supabase.js";
 import { config } from "../config.js";
-import { asText, folderKeyFrom, subtreeFilter } from "../utils/paths.js";
+import {
+  asText,
+  folderKeyFrom,
+  numberedFolderKey,
+  replaceFolderRoot,
+  splitNameAndDir,
+  subtreeFilter,
+  uploadRootKey,
+} from "../utils/paths.js";
 import {
   finalDiskPath,
+  folderDiskDir,
   isInsideUploadDir,
   moveUpload,
   removeEmptyDirs,
   removeQuiet,
+  uniqueFilePath,
 } from "./storage.js";
+
+const folderAliases = new Map();
+const FOLDER_BATCH_IDLE_MS = 10 * 60 * 1000;
+
+function dirExists(username, folderKey) {
+  if (!folderKey) return false;
+  const dir = folderDiskDir(username, folderKey);
+  try {
+    return fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function uniqueFolderKey(username, folderName, folderKey) {
+  const originalRoot = uploadRootKey(folderName, folderKey);
+  if (!originalRoot) return folderKey;
+
+  const mapKey = `${username}::${originalRoot}`;
+  const now = Date.now();
+  const hit = folderAliases.get(mapKey);
+  if (hit && now - hit.lastAt < FOLDER_BATCH_IDLE_MS) {
+    hit.lastAt = now;
+    return replaceFolderRoot(folderKey, originalRoot, hit.destRoot);
+  }
+
+  let destRoot = originalRoot;
+  if (dirExists(username, originalRoot)) {
+    let n = 2;
+    while (dirExists(username, numberedFolderKey(originalRoot, n))) n += 1;
+    destRoot = numberedFolderKey(originalRoot, n);
+  }
+  folderAliases.set(mapKey, { destRoot, lastAt: now });
+  return replaceFolderRoot(folderKey, originalRoot, destRoot);
+}
 
 export async function saveUploadedFile({
   username,
@@ -18,14 +64,19 @@ export async function saveUploadedFile({
   tmpFile,
 }) {
   const name = asText(username).trim();
-  const storedName = asText(fileName).trim() || tmpFile.originalname || "file";
-  const folderKey = folderKeyFrom(folderName, filePath);
-  const destPath = finalDiskPath(name, folderKey, storedName);
+  const rawName = asText(fileName).trim() || tmpFile.originalname || "file";
+  const storedName = splitNameAndDir(rawName).name || "file";
+  const folderKey = uniqueFolderKey(
+    name,
+    folderName,
+    folderKeyFrom(folderName, filePath, rawName)
+  );
+  const destPath = await uniqueFilePath(finalDiskPath(name, folderKey, storedName));
   await moveUpload(tmpFile.path, destPath);
   const rel = path.relative(config.uploadDir, destPath).split(path.sep).join("/");
   return {
     username: name,
-    file_name: storedName,
+    file_name: path.basename(destPath),
     folder_key: folderKey,
     disk_path: destPath,
     rel_path: rel,

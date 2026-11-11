@@ -3,14 +3,38 @@ import path from "path";
 import { config } from "../config.js";
 import { sanitizeSegment } from "../utils/paths.js";
 
-export function finalDiskPath(username, folderKey, fileName) {
+export function folderDiskDir(username, folderKey) {
   const userSeg = sanitizeSegment(username);
   const folderSegs = String(folderKey || "")
     .split("/")
     .filter(Boolean)
     .map(sanitizeSegment);
-  const nameSeg = sanitizeSegment(fileName);
-  return path.join(config.uploadDir, userSeg, ...folderSegs, nameSeg);
+  return path.join(config.uploadDir, userSeg, ...folderSegs);
+}
+
+export function finalDiskPath(username, folderKey, fileName) {
+  return path.join(folderDiskDir(username, folderKey), sanitizeSegment(fileName));
+}
+
+export async function uniqueFilePath(destPath) {
+  try {
+    await fs.access(destPath);
+  } catch {
+    return destPath;
+  }
+  const dir = path.dirname(destPath);
+  const ext = path.extname(destPath);
+  const base = path.basename(destPath, ext);
+  let n = 2;
+  while (true) {
+    const candidate = path.join(dir, `${base} ${n}${ext}`);
+    try {
+      await fs.access(candidate);
+      n += 1;
+    } catch {
+      return candidate;
+    }
+  }
 }
 
 export async function moveUpload(tmpPath, destPath) {
